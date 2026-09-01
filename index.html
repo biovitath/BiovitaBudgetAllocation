@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Biovita Budget Allocation</title>
+    
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel สำหรับแปลงโค้ด -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { margin: 0; background-color: #f3f4f6; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+
+        const DEFAULT_CATEGORIES = [
+            { id: '1', name: 'Customer Acquisition', percentage: 35, color: '#3b82f6', amount: 0 },
+            { id: '2', name: 'Distribution & Inventory', percentage: 25, color: '#f59e0b', amount: 0 },
+            { id: '3', name: 'Production', percentage: 20, color: '#10b981', amount: 0 },
+            { id: '4', name: 'R&D', percentage: 10, color: '#8b5cf6', amount: 0 },
+            { id: '5', name: 'Regulatory Compliance', percentage: 10, color: '#ef4444', amount: 0 }
+        ];
+
+        const ADMIN_PIN = "1234";
+
+        const sortCategoriesDesc = (cats) => {
+            return [...cats].sort((a, b) => b.percentage - a.percentage);
+        };
+
+        function App() {
+            const [categories, setCategories] = useState(sortCategoriesDesc(DEFAULT_CATEGORIES));
+            const [history, setHistory] = useState([]);
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [showPinModal, setShowPinModal] = useState(false);
+            const [pinInput, setPinInput] = useState('');
+            const [pinError, setPinError] = useState(false);
+            const [activeTab, setActiveTab] = useState('dashboard');
+            
+            const [incomeAmount, setIncomeAmount] = useState('');
+            const [expenseAmount, setExpenseAmount] = useState('');
+            const [expenseNote, setExpenseNote] = useState('');
+            const [selectedCategory, setSelectedCategory] = useState('');
+            const [tempCategories, setTempCategories] = useState([]);
+            
+            const [editingItem, setEditingItem] = useState(null);
+            const [editAmount, setEditAmount] = useState('');
+            const [editNote, setEditNote] = useState('');
+
+            // โหลดข้อมูลจาก Local Storage
+            useEffect(() => {
+                const savedCats = localStorage.getItem('biovita_categories');
+                const savedHist = localStorage.getItem('biovita_history');
+                if (savedCats) setCategories(sortCategoriesDesc(JSON.parse(savedCats)));
+                if (savedHist) setHistory(JSON.parse(savedHist));
+            }, []);
+
+            // เลือกหมวดหมู่เริ่มต้นเมื่อหน้าโหลดเสร็จ
+            useEffect(() => {
+                if (categories.length > 0 && !categories.find(c => c.id === selectedCategory)) {
+                    setSelectedCategory(categories[0].id);
+                }
+            }, [categories, selectedCategory]);
+
+            // บันทึกข้อมูลลงเครื่อง
+            const saveToLocal = (newCats, newHist) => {
+                const sorted = sortCategoriesDesc(newCats);
+                localStorage.setItem('biovita_categories', JSON.stringify(sorted));
+                localStorage.setItem('biovita_history', JSON.stringify(newHist));
+            };
+
+            useEffect(() => {
+                if (activeTab === 'settings' && isAdmin) {
+                    setTempCategories(JSON.parse(JSON.stringify(categories)));
+                } else if (activeTab === 'settings' && !isAdmin) {
+                    setActiveTab('dashboard');
+                }
+            }, [activeTab, categories, isAdmin]);
+
+            const totalBalance = useMemo(() => categories.reduce((sum, cat) => sum + cat.amount, 0), [categories]);
+
+            const formatMoney = (amount) => {
+                return new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' }).format(amount);
+            };
+
+            const handlePinSubmit = () => {
+                if (pinInput === ADMIN_PIN) {
+                    setIsAdmin(true);
+                    setShowPinModal(false);
+                    setPinInput('');
+                    setPinError(false);
+                } else {
+                    setPinError(true);
+                }
+            };
+
+            const recalculateAll = (baseCategories, currentHistory) => {
+                let tempCats = sortCategoriesDesc(baseCategories).map(c => ({ ...c, amount: 0 }));
+                const sortedHistory = [...currentHistory].reverse();
+
+                sortedHistory.forEach(record => {
+                    if (record.type === 'income') {
+                        let remainder = record.amount;
+                        tempCats = tempCats.map((cat, index) => {
+                            if (index === tempCats.length - 1) {
+                                cat.amount += remainder;
+                                return cat;
+                            }
+                            const allocated = Math.floor(record.amount * (cat.percentage / 100));
+                            remainder -= allocated;
+                            cat.amount += allocated;
+                            return cat;
+                        });
+                    } else if (record.type === 'expense') {
+                        const catIndex = tempCats.findIndex(c => c.id === record.categoryId);
+                        if (catIndex !== -1) {
+                            tempCats[catIndex].amount -= record.amount;
+                        }
+                    }
+                });
+                return tempCats;
+            };
+
+            const handleAddIncome = () => {
+                if (!isAdmin) return;
+                const amount = parseFloat(incomeAmount);
+                if (isNaN(amount) || amount <= 0) return;
+
+                const newHistory = [{
+                    id: Date.now().toString(),
+                    type: 'income',
+                    amount: amount,
+                    date: new Date().toISOString(),
+                    note: 'รับงบประมาณจัดสรร'
+                }, ...history];
+
+                const newCategories = recalculateAll(categories, newHistory);
+                setCategories(newCategories);
+                setHistory(newHistory);
+                saveToLocal(newCategories, newHistory);
+                setIncomeAmount('');
+                setActiveTab('dashboard');
+            };
+
+            const handleAddExpense = () => {
+                if (!isAdmin) return;
+                const amount = parseFloat(expenseAmount);
+                if (isNaN(amount) || amount <= 0 || !expenseNote.trim()) return;
+
+                const catIndex = categories.findIndex(c => c.id === selectedCategory);
+                if (catIndex === -1) return;
+
+                const newHistory = [{
+                    id: Date.now().toString(),
+                    type: 'expense',
+                    amount: amount,
+                    date: new Date().toISOString(),
+                    note: expenseNote,
+                    categoryId: categories[catIndex].id,
+                    categoryName: categories[catIndex].name
+                }, ...history];
+
+                const newCategories = recalculateAll(categories, newHistory);
+                setCategories(newCategories);
+                setHistory(newHistory);
+                saveToLocal(newCategories, newHistory);
+                setExpenseAmount('');
+                setExpenseNote('');
+                setActiveTab('dashboard');
+            };
+
+            const saveSettings = () => {
+                if (!isAdmin) return;
+                const totalPercent = tempCategories.reduce((sum, cat) => sum + (parseFloat(cat.percentage) || 0), 0);
+                if (Math.abs(totalPercent - 100) > 0.1) return; 
+
+                const baseNewCats = tempCategories.map(tc => ({ ...tc, amount: 0 }));
+                const newCategories = recalculateAll(baseNewCats, history);
+
+                setCategories(newCategories);
+                saveToLocal(newCategories, history);
+                setActiveTab('dashboard');
+            };
+
+            const handleDeleteHistory = (id) => {
+                if (!isAdmin) return;
+                const newHistory = history.filter(item => item.id !== id);
+                const newCategories = recalculateAll(categories, newHistory);
+                setCategories(newCategories);
+                setHistory(newHistory);
+                saveToLocal(newCategories, newHistory);
+            };
+
+            const openEditModal = (item) => {
+                setEditingItem(item);
+                setEditAmount(item.amount.toString());
+                setEditNote(item.note);
+            };
+
+            const handleSaveEdit = () => {
+                if (!isAdmin || !editingItem) return;
+                const newAmount = parseFloat(editAmount);
+                if (isNaN(newAmount) || newAmount <= 0) return;
+
+                const newHistory = history.map(item => {
+                    if (item.id === editingItem.id) {
+                        return { ...item, amount: newAmount, note: editNote };
+                    }
+                    return item;
+                });
+
+                const newCategories = recalculateAll(categories, newHistory);
+                setCategories(newCategories);
+                setHistory(newHistory);
+                saveToLocal(newCategories, newHistory);
+                setEditingItem(null);
+            };
+
+            const addCategory = () => {
+                if (!isAdmin) return;
+                const colors = ['#f43f5e', '#8b5cf6', '#d946ef', '#14b8a6', '#f97316', '#3b82f6'];
+                const randomColor = colors[Math.floor(Math.random() * colors.length)];
+                setTempCategories([...tempCategories, {
+                    id: Date.now().toString(),
+                    name: 'หมวดหมู่ใหม่',
+                    percentage: 0,
+                    color: randomColor,
+                    amount: 0
+                }]);
+            };
+
+            const removeCategory = (id) => {
+                if (!isAdmin) return;
+                setTempCategories(tempCategories.filter(c => c.id !== id));
+            };
+
+            const downloadCSV = () => {
+                let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
+                csvContent += "วันที่,ประเภท,หมวดหมู่,รายละเอียด,จำนวนเงิน\n";
+
+                history.forEach(row => {
+                    const date = new Date(row.date).toLocaleString('th-TH');
+                    const type = row.type === 'income' ? 'รายรับ' : 'รายจ่าย';
+                    const category = row.categoryName || '-';
+                    const note = row.note.replace(/,/g, " ");
+                    csvContent += `${date},${type},${category},${note},${row.amount}\n`;
+                });
+
+                const encodedUri = encodeURI(csvContent);
+                const link = document.createElement("a");
+                link.setAttribute("href", encodedUri);
+                link.setAttribute("download", `Biovita_Budget_${new Date().toISOString().slice(0,10)}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            const totalTempPercent = tempCategories.reduce((sum, cat) => sum + (parseFloat(cat.percentage) || 0), 0);
+
+            return (
+                <div className="flex h-screen justify-center w-full">
+                    <div className="w-full max-w-md bg-white h-full flex flex-col shadow-xl relative overflow-hidden">
+                        
+                        {/* Header */}
+                        <div className="bg-slate-900 text-white pt-10 pb-6 px-6 rounded-b-3xl shadow-md z-10 relative">
+                            <div className="absolute top-4 left-4 z-20">
+                                {isAdmin ? (
+                                    <button onClick={() => { setIsAdmin(false); setActiveTab('dashboard'); }} className="flex items-center text-xs bg-red-500/20 text-red-300 px-2 py-1 rounded-full border border-red-500/30 hover:bg-red-500/30">
+                                        <i className="fas fa-unlock mr-1"></i> ออกจากโหมด Admin
+                                    </button>
+                                ) : (
+                                    <button onClick={() => setShowPinModal(true)} className="flex items-center text-xs bg-slate-800 text-slate-400 px-2 py-1 rounded-full border border-slate-700 hover:bg-slate-700">
+                                        <i className="fas fa-lock mr-1"></i> เฉพาะ Admin
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="flex justify-end items-center mb-1 pt-2">
+                                <div className="flex items-center text-xs text-emerald-400 bg-slate-800 px-2 py-1 rounded-full">
+                                    <i className="fas fa-save mr-1"></i> บันทึกในเครื่องแล้ว
+                                </div>
+                            </div>
+                            <h1 className="text-2xl font-bold tracking-wider mt-2">Biovita Co.,Ltd.</h1>
+                            <p className="text-slate-400 text-sm mb-4">Budget Allocation System</p>
+                            
+                            <div className="bg-slate-800 rounded-2xl p-4 flex items-center justify-between border border-slate-700">
+                                <div>
+                                    <p className="text-slate-400 text-xs mb-1">งบประมาณคงเหลือรวม</p>
+                                    <h2 className={`text-3xl font-semibold ${totalBalance < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                        {formatMoney(totalBalance)}
+                                    </h2>
+                                </div>
+                                <i className="fas fa-wallet text-3xl text-slate-500 opacity-50"></i>
+                            </div>
+                        </div>
+
+                        {/* Content */}
+                        <div className="flex-1 overflow-y-auto pb-20 px-4 pt-4 hide-scrollbar">
+                            
+                            {/* DASHBOARD */}
+                            {activeTab === 'dashboard' && (
+                                <div className="space-y-4">
+                                    <h3 className="font-semibold text-gray-700 flex items-center mb-3">
+                                        <i className="fas fa-chart-pie mr-2 text-indigo-500"></i> สัดส่วนงบประมาณปัจจุบัน
+                                    </h3>
+                                    
+                                    <div className="h-6 w-full flex rounded-full overflow-hidden shadow-inner bg-gray-200">
+                                        {categories.map(cat => (
+                                            <div key={cat.id} style={{ width: `${cat.percentage}%`, backgroundColor: cat.color }} className="h-full transition-all hover:opacity-80" title={`${cat.name}: ${cat.percentage}%`}></div>
+                                        ))}
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-3 mt-4">
+                                        {categories.map((cat, index) => (
+                                            <div key={cat.id} className={`bg-white border ${cat.amount < 0 ? 'border-rose-200 bg-rose-50' : 'border-gray-100'} shadow-sm rounded-xl p-4 flex justify-between items-center relative overflow-hidden`}>
+                                                <div className="absolute top-0 left-0 bg-gray-100 text-gray-400 text-[9px] px-2 py-0.5 rounded-br-lg font-bold">#{index + 1}</div>
+                                                <div className="flex items-center mt-2">
+                                                    <div className="w-4 h-4 rounded-full mr-3 shadow-sm" style={{ backgroundColor: cat.color }}></div>
+                                                    <div>
+                                                        <p className="text-sm font-medium text-gray-800">{cat.name}</p>
+                                                        <p className="text-xs text-gray-400">{cat.percentage}%</p>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right mt-2">
+                                                    <p className={`text-sm font-semibold ${cat.amount < 0 ? 'text-rose-600' : 'text-gray-700'}`}>{formatMoney(cat.amount)}</p>
+                                                    {cat.amount < 0 && <p className="text-[10px] text-rose-500 mt-1">งบติดลบ</p>}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* INCOME */}
+                            {activeTab === 'income' && isAdmin && (
+                                <div className="space-y-5 px-2">
+                                    <div className="text-center mb-6">
+                                        <div className="inline-block p-4 bg-emerald-100 text-emerald-600 rounded-full mb-3">
+                                            <i className="fas fa-arrow-trend-up text-3xl"></i>
+                                        </div>
+                                        <h3 className="text-xl font-bold text-gray-800">เพิ่มงบประมาณ</h3>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">จำนวนเงิน (บาท)</label>
+                                        <input type="number" value={incomeAmount} onChange={(e) => setIncomeAmount(e.target.value)} className="w-full text-2xl p-4 border border-gray-200 rounded-xl outline-none focus:border-emerald-500" placeholder="0.00" />
+                                    </div>
+                                    <button onClick={handleAddIncome} className="w-full bg-emerald-500 text-white font-bold py-4 rounded-xl shadow-lg mt-6 flex justify-center items-center hover:bg-emerald-600">
+                                        <i className="fas fa-check mr-2"></i> ยืนยันการรับงบ
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* EXPENSE */}
+                            {activeTab === 'expense' && isAdmin && (
+                                <div className="space-y-5 px-2">
+                                    <div className="text-center mb-4">
+                                        <div className="inline-block p-4 bg-rose-100 text-rose-500 rounded-full mb-3">
+                                            <i className="fas fa-money-bill-wave text-3xl"></i>
+                                        </div>
+                                        <h3 className="text-xl font-bold text-gray-800">บันทึกรายจ่าย</h3>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">หักจากกองไหน?</label>
+                                        <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} className="w-full p-4 border border-gray-200 rounded-xl outline-none focus:border-rose-500 bg-white">
+                                            {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name} (คงเหลือ: {formatMoney(cat.amount)})</option>)}
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">จำนวนเงิน (บาท)</label>
+                                        <input type="number" value={expenseAmount} onChange={(e) => setExpenseAmount(e.target.value)} className="w-full text-2xl p-4 border border-gray-200 rounded-xl outline-none focus:border-rose-500" placeholder="0.00" />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">รายละเอียด</label>
+                                        <input type="text" value={expenseNote} onChange={(e) => setExpenseNote(e.target.value)} className="w-full p-4 border border-gray-200 rounded-xl outline-none focus:border-rose-500" placeholder="รายละเอียดค่าใช้จ่าย" />
+                                    </div>
+                                    <button onClick={handleAddExpense} className="w-full bg-rose-500 text-white font-bold py-4 rounded-xl shadow-lg mt-6 flex justify-center items-center hover:bg-rose-600">
+                                        <i className="fas fa-check mr-2"></i> ยืนยันรายจ่าย
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* HISTORY */}
+                            {activeTab === 'history' && (
+                                <div>
+                                    <div className="flex justify-between items-center mb-4 sticky top-0 bg-gray-100 py-2">
+                                        <h3 className="font-semibold text-gray-700">ประวัติรายการ</h3>
+                                        <button onClick={downloadCSV} className="flex items-center text-xs bg-white text-indigo-600 px-3 py-2 border border-indigo-200 rounded-lg shadow-sm hover:bg-indigo-50">
+                                            <i className="fas fa-download mr-1"></i> Export CSV
+                                        </button>
+                                    </div>
+                                    {history.length === 0 ? (
+                                        <div className="text-center text-gray-400 py-10">ยังไม่มีประวัติรายการ</div>
+                                    ) : (
+                                        <div className="space-y-3">
+                                            {history.map(item => (
+                                                <div key={item.id} className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="flex items-center">
+                                                            <div className={`p-2 rounded-full mr-3 ${item.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-500'}`}>
+                                                                {item.type === 'income' ? <i className="fas fa-arrow-down"></i> : <i className="fas fa-arrow-up"></i>}
+                                                            </div>
+                                                            <div>
+                                                                <p className="text-sm font-medium text-gray-800">{item.note}</p>
+                                                                <p className="text-xs text-gray-400">{new Date(item.date).toLocaleDateString('th-TH', { hour: '2-digit', minute: '2-digit' })} • {item.type === 'expense' ? item.categoryName : 'ระบบแบ่งกอง'}</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className={`font-semibold ${item.type === 'income' ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                                            {item.type === 'income' ? '+' : '-'}{formatMoney(item.amount)}
+                                                        </div>
+                                                    </div>
+                                                    {isAdmin && (
+                                                        <div className="flex justify-end space-x-3 mt-2 pt-2 border-t border-gray-50">
+                                                            <button onClick={() => openEditModal(item)} className="text-gray-400 hover:text-indigo-500"><i className="fas fa-pen"></i></button>
+                                                            <button onClick={() => { if(window.confirm('ยืนยันการลบรายการนี้?')) handleDeleteHistory(item.id) }} className="text-gray-400 hover:text-rose-500"><i className="fas fa-trash"></i></button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* SETTINGS */}
+                            {activeTab === 'settings' && isAdmin && (
+                                <div className="pb-10">
+                                    <h3 className="font-semibold text-gray-700 flex items-center mb-4">
+                                        <i className="fas fa-cog mr-2"></i> ตั้งค่าสัดส่วนงบประมาณ
+                                    </h3>
+                                    <div className="bg-amber-50 border border-amber-200 text-amber-700 p-3 rounded-xl mb-4 text-xs">
+                                        <strong className="block mb-1">⚠️ คำเตือน</strong>
+                                        การเปลี่ยน % จะนำยอด "รายรับ" ในอดีตทั้งหมดมาคำนวณแบ่งกองใหม่
+                                    </div>
+                                    <div className={`p-4 rounded-xl mb-4 border ${totalTempPercent === 100 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700'}`}>
+                                        <div className="flex justify-between font-bold"><span>สัดส่วนรวม:</span><span>{totalTempPercent}%</span></div>
+                                        {totalTempPercent !== 100 && <p className="text-xs mt-1"><i className="fas fa-exclamation-circle mr-1"></i> ต้องรวมกันให้ได้ 100% พอดี</p>}
+                                    </div>
+                                    <div className="space-y-3">
+                                        {[...tempCategories].sort((a,b) => b.percentage - a.percentage).map((cat) => {
+                                            const realIndex = tempCategories.findIndex(c => c.id === cat.id);
+                                            return (
+                                                <div key={cat.id} className="bg-white p-3 rounded-xl border border-gray-200 flex items-center shadow-sm">
+                                                    <input type="color" value={cat.color} onChange={(e) => { const newCats = [...tempCategories]; newCats[realIndex].color = e.target.value; setTempCategories(newCats); }} className="w-8 h-8 rounded border-0 cursor-pointer mr-3" />
+                                                    <div className="flex-1 mr-2">
+                                                        <input type="text" value={cat.name} onChange={(e) => { const newCats = [...tempCategories]; newCats[realIndex].name = e.target.value; setTempCategories(newCats); }} className="w-full text-sm font-medium border-b border-gray-200 outline-none pb-1" placeholder="ชื่อหมวดหมู่" />
+                                                    </div>
+                                                    <div className="w-16 flex items-center mr-2">
+                                                        <input type="number" value={cat.percentage} onChange={(e) => { const newCats = [...tempCategories]; newCats[realIndex].percentage = parseFloat(e.target.value) || 0; setTempCategories(newCats); }} className="w-full text-center font-semibold bg-gray-50 border border-gray-200 rounded p-1 outline-none" />
+                                                        <span className="text-gray-500 text-sm ml-1">%</span>
+                                                    </div>
+                                                    <button onClick={() => removeCategory(cat.id)} className="p-2 text-rose-400 hover:text-rose-600"><i className="fas fa-times"></i></button>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                    <button onClick={addCategory} className="w-full mt-3 py-3 border-2 border-dashed border-gray-300 text-gray-500 rounded-xl hover:bg-gray-50 font-medium">
+                                        <i className="fas fa-plus mr-2"></i> เพิ่มหมวดหมู่ใหม่
+                                    </button>
+                                    <button onClick={saveSettings} disabled={totalTempPercent !== 100} className={`w-full mt-6 py-4 rounded-xl font-bold flex justify-center items-center ${totalTempPercent === 100 ? 'bg-slate-900 text-white shadow-lg' : 'bg-gray-300 text-gray-500'}`}>
+                                        <i className="fas fa-check mr-2"></i> บันทึก & คำนวณใหม่
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Modals */}
+                        {showPinModal && (
+                            <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+                                <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="text-lg font-bold">โหมด Admin</h3>
+                                        <button onClick={() => {setShowPinModal(false); setPinError(false); setPinInput('');}} className="text-gray-400"><i className="fas fa-times"></i></button>
+                                    </div>
+                                    <input type="password" value={pinInput} onChange={(e) => setPinInput(e.target.value)} placeholder="รหัสผ่าน (PIN)" className={`w-full p-4 border rounded-xl outline-none mb-2 text-center text-xl tracking-widest ${pinError ? 'border-red-500 bg-red-50' : 'border-gray-300'}`} autoFocus />
+                                    {pinError && <p className="text-xs text-red-500 text-center mb-4">รหัสผ่านไม่ถูกต้อง</p>}
+                                    <button onClick={handlePinSubmit} className="w-full py-3 bg-slate-900 text-white rounded-xl font-medium mt-2">เข้าสู่ระบบ</button>
+                                </div>
+                            </div>
+                        )}
+
+                        {editingItem && (
+                            <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+                                <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h3 className="text-lg font-bold">แก้ไขรายการ</h3>
+                                        <button onClick={() => setEditingItem(null)} className="text-gray-400"><i className="fas fa-times"></i></button>
+                                    </div>
+                                    <div className="space-y-4">
+                                        <div><label className="text-xs text-gray-500 block">รายละเอียด</label><input type="text" value={editNote} onChange={(e) => setEditNote(e.target.value)} className="w-full p-3 border rounded-lg" /></div>
+                                        <div><label className="text-xs text-gray-500 block">จำนวนเงิน</label><input type="number" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} className="w-full p-3 border rounded-lg text-lg font-bold" /></div>
+                                    </div>
+                                    <button onClick={handleSaveEdit} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-medium mt-6">บันทึกการแก้ไข</button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Bottom Nav */}
+                        <div className="bg-white border-t border-gray-100 py-2 px-6 flex justify-between items-center shadow-[0_-5px_20px_-15px_rgba(0,0,0,0.1)] pb-safe z-10">
+                            <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center p-2 ${activeTab === 'dashboard' ? 'text-indigo-600' : 'text-gray-400'}`}><i className="fas fa-chart-pie text-xl mb-1"></i><span className="text-[10px]">ภาพรวม</span></button>
+                            {isAdmin && <button onClick={() => setActiveTab('income')} className={`flex flex-col items-center p-2 ${activeTab === 'income' ? 'text-emerald-500' : 'text-gray-400'}`}><i className="fas fa-plus text-xl mb-1"></i><span className="text-[10px]">รับงบ</span></button>}
+                            {isAdmin && <button onClick={() => setActiveTab('expense')} className={`flex flex-col items-center p-2 ${activeTab === 'expense' ? 'text-rose-500' : 'text-gray-400'}`}><i className="fas fa-minus text-xl mb-1"></i><span className="text-[10px]">รายจ่าย</span></button>}
+                            <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center p-2 ${activeTab === 'history' ? 'text-blue-500' : 'text-gray-400'}`}><i className="fas fa-history text-xl mb-1"></i><span className="text-[10px]">ประวัติ</span></button>
+                            {isAdmin && <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center p-2 ${activeTab === 'settings' ? 'text-slate-700' : 'text-gray-400'}`}><i className="fas fa-cog text-xl mb-1"></i><span className="text-[10px]">ตั้งค่า</span></button>}
+                        </div>
+                        
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
